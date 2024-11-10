@@ -1,0 +1,238 @@
+# Basic ESP32-C3 configuration
+esphome:
+  name: soil-sensor
+  platform: ESP32
+  board: esp32-c3-devkitm-1
+
+# Enable logging
+logger:
+  level: VERY_VERBOSE
+  baud_rate: 115200
+
+# Enable Home Assistant API
+api:
+
+ota:
+  platform: esphome
+
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+    - ssid: !secret wifi_ssid_2
+      password: !secret wifi_password
+    - ssid: !secret wifi_ssid_3
+      password: !secret wifi_password
+    - ssid: !secret wifi_ssid_4
+      password: !secret wifi_password  
+  
+  # Enable fallback hotspot in case wifi connection fails
+  ap:
+    ssid: "Soil-Sensor Fallback"
+    password: "12345678"
+
+# UART configuration for RS485
+uart:
+  id: uart_bus
+  tx_pin: GPIO5
+  rx_pin: GPIO6
+  baud_rate: 4800
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+
+# Modbus configuration with flow control
+modbus:
+  id: modbus1
+  uart_id: uart_bus
+  flow_control_pin: GPIO4
+
+# Modbus controller setup
+modbus_controller:
+  - id: soil_sensor_controller
+    modbus_id: modbus1
+    address: 0x01
+    update_interval: 11s
+    command_throttle: 150ms
+    setup_priority: -10
+
+# Sensors configuration
+sensor:
+  # Raw soil humidity sensor
+  - platform: modbus_controller
+    modbus_controller_id: soil_sensor_controller
+    id: soil_humidity_raw
+    internal: true
+    address: 0
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  # Calibrated soil humidity
+  - platform: template
+    name: "Soil Humidity"
+    id: soil_humidity
+    unit_of_measurement: "RH"
+    accuracy_decimals: 1
+    lambda: |-
+      if (id(soil_humidity_raw).has_state()) {
+        float raw_value = id(soil_humidity_raw).state;
+        // Quadratic approximation from documentation
+        float soil_apparent_dieletric_constant = 1.3088 + (0.1439 * raw_value) + (0.0076 * raw_value * raw_value);
+        return raw_value;  // Return raw value for now, but dielectric constant is calculated if needed
+      }
+      return {};
+
+  # Soil temperature sensors (C and F)
+  - platform: modbus_controller
+    modbus_controller_id: soil_sensor_controller
+    id: soil_temperature
+    name: "Soil Temperature (C)"
+    address: 1
+    unit_of_measurement: "°C"
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: template
+    name: "Soil Temperature (F)"
+    unit_of_measurement: "°F"
+    accuracy_decimals: 1
+    lambda: |-
+      if (id(soil_temperature).has_state()) {
+        return (id(soil_temperature).state * 9.0/5.0) + 32.0;
+      }
+      return {};
+
+  # Raw conductivity sensor
+  - platform: modbus_controller
+    modbus_controller_id: soil_sensor_controller
+    id: soil_conductivity_raw
+    internal: true
+    address: 2
+    register_type: holding
+    value_type: U_WORD
+
+  # Calibrated conductivity with temperature compensation
+  - platform: template
+    name: "Soil Conductivity"
+    unit_of_measurement: "μS/cm"
+    accuracy_decimals: 0
+    lambda: |-
+      if (id(soil_conductivity_raw).has_state() && id(soil_temperature).has_state()) {
+        float soil_ec = id(soil_conductivity_raw).state;
+        float temp = id(soil_temperature).state;
+        
+        // Calibration from documentation
+        soil_ec = 1.93 * soil_ec - 270.8;
+        // Temperature compensation
+        soil_ec = soil_ec / (1.0 + 0.019 * (temp - 25.0));
+        
+        return soil_ec;
+      }
+      return {};
+
+  # Soil pH sensor with corrected calibration
+  - platform: modbus_controller
+    modbus_controller_id: soil_sensor_controller
+    id: soil_ph_raw
+    internal: true
+    address: 3
+    register_type: holding
+    value_type: U_WORD
+
+  - platform: template
+    name: "Soil pH"
+    unit_of_measurement: "pH"
+    accuracy_decimals: 1
+    lambda: |-
+      if (id(soil_ph_raw).has_state() && id(soil_temperature).has_state()) {
+        float raw_value = id(soil_ph_raw).state * 0.1;
+        // Add any necessary pH corrections here based on calibration
+        return raw_value;
+      }
+      return {};
+
+  # NPK Sensors with corrected offsets
+  - platform: modbus_controller
+    modbus_controller_id: soil_sensor_controller
+    id: soil_nitrogen_raw
+    internal: true
+    address: 4
+    register_type: holding
+    value_type: U_WORD
+
+  - platform: template
+    name: "Soil Nitrogen"
+    unit_of_measurement: "mg/Kg"
+    accuracy_decimals: 0
+    lambda: |-
+      if (id(soil_nitrogen_raw).has_state()) {
+        float value = id(soil_nitrogen_raw).state - 27;  // Offset from documentation
+        return value < 0 ? 0 : value;
+      }
+      return {};
+
+  - platform: modbus_controller
+    modbus_controller_id: soil_sensor_controller
+    id: soil_phosphorus_raw
+    internal: true
+    address: 5
+    register_type: holding
+    value_type: U_WORD
+
+  - platform: template
+    name: "Soil Phosphorus"
+    unit_of_measurement: "mg/Kg"
+    accuracy_decimals: 0
+    lambda: |-
+      if (id(soil_phosphorus_raw).has_state()) {
+        float value = id(soil_phosphorus_raw).state - 109;  // Offset from documentation
+        return value < 0 ? 0 : value;
+      }
+      return {};
+
+  - platform: modbus_controller
+    modbus_controller_id: soil_sensor_controller
+    id: soil_potassium_raw
+    internal: true
+    address: 6
+    register_type: holding
+    value_type: U_WORD
+
+  - platform: template
+    name: "Soil Potassium"
+    unit_of_measurement: "mg/Kg"
+    accuracy_decimals: 0
+    lambda: |-
+      if (id(soil_potassium_raw).has_state()) {
+        float value = id(soil_potassium_raw).state - 102;  // Offset from documentation
+        return value < 0 ? 0 : value;
+      }
+      return {};
+
+  # WiFi signal strength sensor
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+
+# Status text sensors
+text_sensor:
+  - platform: version
+    name: "ESPHome Version"
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "Connected SSID"
+    bssid:
+      name: "Connected BSSID"
+
+# Binary sensor for status
+binary_sensor:
+  - platform: status
+    name: "Sensor Status"
